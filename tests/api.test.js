@@ -79,3 +79,60 @@ test('chat rejects missing key, bad method and bad input', async () => {
   await chat({ method: 'POST', body: { question: 'q', sources: [{ text: 'x' }] } }, res);
   assert.equal(res.statusCode, 500);
 });
+
+test('chat falls back to the next model when one is overloaded', async () => {
+  let n = 0;
+  globalThis.fetch = async (url, init) => {
+    calls.push({ url, body: JSON.parse(init.body) });
+    n++;
+    if (n === 1) return { ok: false, status: 503, json: async () => ({ error: { message: 'high demand' } }) };
+    return { ok: true, status: 200, json: async () => ({ candidates: [{ content: { parts: [{ text: 'OK [1]' }] } }] }) };
+  };
+  const res = mockRes();
+  await chat({ method: 'POST', body: { question: 'q', sources: [{ text: 'x' }] } }, res);
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.body.answer, 'OK [1]');
+  assert.notEqual(calls[0].url, calls[1].url);
+});
+
+test('chat gives a friendly error when every model is busy', async () => {
+  mockFetch(503, { error: { message: 'high demand' } });
+  const res = mockRes();
+  await chat({ method: 'POST', body: { question: 'q', sources: [{ text: 'x' }] } }, res);
+  assert.equal(res.statusCode, 503);
+  assert.match(res.body.error, /busy/);
+  assert.equal(calls.length, 3);
+});
+
+test('chat falls back when a model times out', async () => {
+  let n = 0;
+  globalThis.fetch = async (url, init) => {
+    calls.push({ url });
+    n++;
+    if (n === 1) { const e = new Error('timeout'); e.name = 'TimeoutError'; throw e; }
+    return { ok: true, status: 200, json: async () => ({ candidates: [{ content: { parts: [{ text: 'Fast answer [1]' }] } }] }) };
+  };
+  const res = mockRes();
+  await chat({ method: 'POST', body: { question: 'q', sources: [{ text: 'x' }] } }, res);
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.body.answer, 'Fast answer [1]');
+  assert.equal(calls.length, 2);
+});
+
+test('chat passes a timeout signal to each model call', async () => {
+  let sawSignal = false;
+  globalThis.fetch = async (url, init) => {
+    sawSignal = init.signal instanceof AbortSignal;
+    return { ok: true, status: 200, json: async () => ({ candidates: [{ content: { parts: [{ text: 'ok' }] } }] }) };
+  };
+  const res = mockRes();
+  await chat({ method: 'POST', body: { question: 'q', sources: [{ text: 'x' }] } }, res);
+  assert.ok(sawSignal);
+});
+
+test('chat flags answers cut off by the token limit', async () => {
+  mockFetch(200, { candidates: [{ finishReason: 'MAX_TOKENS', content: { parts: [{ text: 'Partial' }] } }] });
+  const res = mockRes();
+  await chat({ method: 'POST', body: { question: 'q', sources: [{ text: 'x' }] } }, res);
+  assert.match(res.body.answer, /^Partial\n\n\(Answer was cut off/);
+});
