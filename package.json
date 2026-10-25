@@ -1,0 +1,13 @@
+{
+  "name": "docask-rag",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Ask questions about your own documents with retrieval-augmented generation on the free Gemini API.",
+  "type": "module",
+  "scripts": {
+    "test": "node --test tests/*.test.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

@@ -1,0 +1,291 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>DocAsk — RAG Document Q&amp;A</title>
+  <meta name="description" content="Upload a document and ask questions about it. Answers cite the passages they came from." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+  <style>
+    :root {
+      --bg: #f6f5f1; --panel: #ffffff; --ink: #1c1b18; --muted: #6b6860; --line: #e4e1d8;
+      --accent: #2f5d50; --accent-ink: #ffffff; --accent-soft: #e6efe9; --warn: #9a3b22; --warn-soft: #f8e8e2;
+      --mono: 'JetBrains Mono', ui-monospace, monospace;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #141513; --panel: #1d1f1c; --ink: #ecebe5; --muted: #a09d93; --line: #2f322d;
+        --accent: #7fb8a4; --accent-ink: #0f1a16; --accent-soft: #23302b; --warn: #f0a28a; --warn-soft: #3a241d;
+      }
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.55 Inter, system-ui, sans-serif; }
+    header { max-width: 1100px; margin: 0 auto; padding: 28px 16px 8px; display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; }
+    header h1 { margin: 0; font-size: 22px; letter-spacing: -0.02em; }
+    header p { margin: 0; color: var(--muted); }
+    main { max-width: 1100px; margin: 0 auto; padding: 12px 16px 40px; display: grid; grid-template-columns: 360px 1fr; gap: 16px; }
+    @media (max-width: 860px) { main { grid-template-columns: 1fr; } }
+    .card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 18px; }
+    h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); margin: 0 0 12px; font-weight: 600; }
+    .drop { display: block; border: 1.5px dashed var(--line); border-radius: 10px; padding: 22px 14px; text-align: center; cursor: pointer; transition: border-color .15s, background .15s; }
+    .drop:hover, .drop.over { border-color: var(--accent); background: var(--accent-soft); }
+    .drop strong { display: block; margin-bottom: 4px; }
+    .drop span { color: var(--muted); font-size: 13px; }
+    textarea, input[type=text] { width: 100%; border: 1px solid var(--line); background: var(--bg); color: var(--ink); border-radius: 8px; padding: 10px 12px; font: inherit; }
+    textarea { min-height: 110px; resize: vertical; margin-top: 12px; }
+    textarea:focus, input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+    button { font: inherit; font-weight: 600; border: 0; border-radius: 8px; padding: 10px 14px; cursor: pointer; background: var(--accent); color: var(--accent-ink); }
+    button.ghost { background: transparent; color: var(--accent); border: 1px solid var(--line); font-weight: 500; }
+    button:disabled { opacity: .5; cursor: not-allowed; }
+    .row { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
+    .row > button { flex: 1; }
+    .status { margin-top: 14px; font-size: 13px; color: var(--muted); min-height: 20px; }
+    .status.err { color: var(--warn); }
+    .bar { height: 4px; background: var(--line); border-radius: 4px; overflow: hidden; margin-top: 8px; display: none; }
+    .bar > i { display: block; height: 100%; width: 0; background: var(--accent); transition: width .2s; }
+    .meta { margin-top: 14px; font-family: var(--mono); font-size: 12px; color: var(--muted); display: grid; grid-template-columns: auto 1fr; gap: 2px 12px; }
+    .meta b { color: var(--ink); font-weight: 500; }
+    .chat { display: flex; flex-direction: column; min-height: 560px; }
+    .log { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 16px; padding-bottom: 12px; }
+    .empty { margin: auto; text-align: center; color: var(--muted); max-width: 360px; }
+    .empty .suggest { display: flex; flex-direction: column; gap: 6px; margin-top: 14px; }
+    .q { align-self: flex-end; background: var(--accent); color: var(--accent-ink); padding: 9px 13px; border-radius: 12px 12px 2px 12px; max-width: 80%; }
+    .a { align-self: flex-start; max-width: 92%; }
+    .a .text { white-space: pre-wrap; }
+    .a .text sup { font-family: var(--mono); font-size: 11px; background: var(--accent-soft); color: var(--accent); padding: 0 4px; border-radius: 4px; cursor: pointer; }
+    .a.error .text { color: var(--warn); background: var(--warn-soft); padding: 8px 12px; border-radius: 8px; }
+    details { margin-top: 8px; font-size: 13px; }
+    summary { color: var(--muted); cursor: pointer; }
+    .src { border-left: 2px solid var(--line); padding: 6px 10px; margin-top: 8px; }
+    .src.hl { border-color: var(--accent); background: var(--accent-soft); }
+    .src .tag { font-family: var(--mono); font-size: 11px; color: var(--muted); }
+    .src p { margin: 4px 0 0; white-space: pre-wrap; max-height: 140px; overflow-y: auto; }
+    form.ask { display: flex; gap: 8px; border-top: 1px solid var(--line); padding-top: 12px; }
+    .dots::after { content: '…'; animation: blink 1s infinite; }
+    @keyframes blink { 50% { opacity: .2; } }
+    footer { max-width: 1100px; margin: 0 auto; padding: 0 16px 28px; color: var(--muted); font-size: 12px; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>DocAsk</h1>
+    <p>Ask questions about a document. Every answer cites the passages it used.</p>
+  </header>
+
+  <main>
+    <section class="card" aria-labelledby="doc-h">
+      <h2 id="doc-h">1 · Your document</h2>
+      <label class="drop" id="drop" tabindex="0">
+        <strong>Drop a PDF, .txt or .md file</strong>
+        <span>or click to choose · stays in your browser</span>
+        <input id="file" type="file" accept=".pdf,.txt,.md,text/plain,application/pdf" hidden />
+      </label>
+      <textarea id="paste" placeholder="…or paste text here"></textarea>
+      <div class="row">
+        <button id="index">Index document</button>
+        <button id="sample" class="ghost">Try a sample</button>
+      </div>
+      <div class="bar" id="bar"><i></i></div>
+      <div class="status" id="status" role="status"></div>
+      <div class="meta" id="meta" hidden></div>
+    </section>
+
+    <section class="card chat" aria-labelledby="ask-h">
+      <h2 id="ask-h">2 · Ask</h2>
+      <div class="log" id="log" aria-live="polite">
+        <div class="empty" id="empty">Index a document first, then ask anything about it.</div>
+      </div>
+      <form class="ask" id="ask">
+        <input id="question" type="text" placeholder="Ask a question about the document" autocomplete="off" disabled maxlength="1000" />
+        <button id="send" disabled>Ask</button>
+      </form>
+    </section>
+  </main>
+
+  <footer>Retrieval: Gemini embeddings + cosine similarity in your browser · Generation: Gemini Flash · Built by Heet Shah</footer>
+
+  <script type="module">
+    import { chunkPages, topK } from './lib.js';
+
+    const MAX_CHUNKS = 60;       // keeps a single document inside the free-tier embedding quota
+    const BATCH = 20;            // texts per /api/embed call
+    const TOP_K = 4;
+
+    const $ = (id) => document.getElementById(id);
+    const state = { name: '', chunks: [], busy: false };
+
+    const SAMPLE = {
+      name: 'Sample: Remote Work Policy',
+      pages: [
+        { page: 1, text: `Northwind Remote Work Policy\n\nEligibility. Employees who have completed their 90-day introductory period may work remotely up to three days per week, with manager approval. Roles that require on-site equipment, such as lab technicians, are not eligible.\n\nCore hours. Remote employees must be reachable between 10:00 a.m. and 3:00 p.m. in their local time zone, and must attend the Tuesday all-hands meeting on camera.` },
+        { page: 2, text: `Equipment. The company provides a laptop and one external monitor. Employees may claim up to $300 per year for home-office furniture by submitting receipts through the expense portal within 30 days of purchase.\n\nSecurity. Company data may only be accessed over the company VPN. Public Wi-Fi is allowed only when the VPN is connected. Lost or stolen devices must be reported to IT within 24 hours.\n\nReview. Remote arrangements are reviewed every six months and may be revoked if performance goals are not met.` },
+      ],
+    };
+
+    function setStatus(msg, isErr = false) { $('status').textContent = msg; $('status').className = 'status' + (isErr ? ' err' : ''); }
+    function setProgress(frac) {
+      $('bar').style.display = frac == null ? 'none' : 'block';
+      $('bar').firstElementChild.style.width = `${Math.round((frac || 0) * 100)}%`;
+    }
+
+    async function api(path, body) {
+      const r = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        const msg = r.status === 429
+          ? 'Free-tier rate limit reached. Wait a minute and try again.'
+          : data.error || `Request failed (${r.status})`;
+        throw new Error(msg);
+      }
+      return data;
+    }
+
+    async function readPdf(file) {
+      if (!window.pdfjsLib) throw new Error('PDF reader failed to load. Check your connection.');
+      pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+      const pdf = await pdfjsLib.getDocument({ data: await file.arrayBuffer() }).promise;
+      const pages = [];
+      for (let i = 1; i <= pdf.numPages; i++) {
+        const content = await (await pdf.getPage(i)).getTextContent();
+        const text = content.items.map((it) => it.str + (it.hasEOL ? '\n' : ' ')).join('');
+        if (text.trim()) pages.push({ page: i, text });
+      }
+      if (!pages.length) throw new Error('No text found. Scanned PDFs (images) are not supported.');
+      return pages;
+    }
+
+    async function loadFile(file) {
+      if (!file) return;
+      try {
+        setStatus(`Reading ${file.name}…`);
+        const pages = file.name.toLowerCase().endsWith('.pdf') ? await readPdf(file) : [{ page: null, text: await file.text() }];
+        await indexPages(file.name, pages);
+      } catch (e) { setStatus(e.message, true); setProgress(null); }
+    }
+
+    async function indexPages(name, pages) {
+      if (state.busy) return;
+      let chunks = chunkPages(pages);
+      if (!chunks.length) return setStatus('That document is empty.', true);
+      let note = '';
+      if (chunks.length > MAX_CHUNKS) {
+        note = ` (first ${MAX_CHUNKS} of ${chunks.length} chunks — free-tier limit)`;
+        chunks = chunks.slice(0, MAX_CHUNKS);
+      }
+
+      state.busy = true; toggleAsk(false);
+      $('index').disabled = $('sample').disabled = true;
+      const t0 = performance.now();
+      try {
+        for (let i = 0; i < chunks.length; i += BATCH) {
+          setStatus(`Embedding chunks ${i + 1}–${Math.min(i + BATCH, chunks.length)} of ${chunks.length}…`);
+          setProgress(i / chunks.length);
+          const slice = chunks.slice(i, i + BATCH);
+          const { embeddings } = await api('/api/embed', { texts: slice.map((c) => c.text), taskType: 'RETRIEVAL_DOCUMENT' });
+          slice.forEach((c, j) => { c.vector = embeddings[j]; });
+        }
+        state.name = name; state.chunks = chunks;
+        setProgress(null);
+        setStatus(`Ready${note}. Ask a question →`);
+        const pageCount = new Set(chunks.map((c) => c.page)).size;
+        $('meta').hidden = false;
+        $('meta').innerHTML = '';
+        for (const [k, v] of [['document', name], ['chunks', chunks.length], ['pages', pages[0].page == null ? '—' : pageCount], ['dimensions', chunks[0].vector.length], ['index time', `${((performance.now() - t0) / 1000).toFixed(1)}s`]]) {
+          const dt = document.createElement('span'); dt.textContent = k;
+          const dd = document.createElement('b'); dd.textContent = v;
+          $('meta').append(dt, dd);
+        }
+        resetLog();
+        toggleAsk(true);
+      } catch (e) {
+        setStatus(e.message, true); setProgress(null);
+      } finally {
+        state.busy = false;
+        $('index').disabled = $('sample').disabled = false;
+      }
+    }
+
+    function toggleAsk(on) { $('question').disabled = $('send').disabled = !on; if (on) $('question').focus(); }
+
+    function resetLog() {
+      $('log').innerHTML = '';
+      const empty = document.createElement('div');
+      empty.className = 'empty';
+      empty.innerHTML = '<div>Indexed <b></b>. Try asking:</div><div class="suggest"></div>';
+      empty.querySelector('b').textContent = state.name;
+      const ideas = state.name.startsWith('Sample') ? ['How many days a week can I work remotely?', 'What is the furniture allowance?', 'Can I use public Wi-Fi?'] : ['Summarize the main points', 'What are the key dates or deadlines?'];
+      for (const idea of ideas) {
+        const b = document.createElement('button'); b.className = 'ghost'; b.textContent = idea; b.type = 'button';
+        b.onclick = () => ask(idea);
+        empty.querySelector('.suggest').append(b);
+      }
+      $('log').append(empty);
+    }
+
+    function renderAnswer(el, answer, sources) {
+      const text = el.querySelector('.text');
+      text.textContent = '';
+      // Turn [1], [2] markers into clickable superscripts that highlight the source.
+      for (const part of answer.split(/(\[\d+\])/g)) {
+        const m = part.match(/^\[(\d+)\]$/);
+        if (m && sources[+m[1] - 1]) {
+          const sup = document.createElement('sup'); sup.textContent = m[1];
+          sup.onclick = () => { const d = el.querySelector('details'); d.open = true; el.querySelectorAll('.src').forEach((s, i) => s.classList.toggle('hl', i === +m[1] - 1)); };
+          text.append(sup);
+        } else text.append(part);
+      }
+      const det = document.createElement('details');
+      det.innerHTML = `<summary>${sources.length} sources retrieved</summary>`;
+      sources.forEach((s, i) => {
+        const div = document.createElement('div'); div.className = 'src';
+        const tag = document.createElement('div'); tag.className = 'tag';
+        tag.textContent = `[${i + 1}] ${s.page ? `page ${s.page} · ` : ''}similarity ${s.score.toFixed(3)}`;
+        const p = document.createElement('p'); p.textContent = s.text;
+        div.append(tag, p); det.append(div);
+      });
+      el.append(det);
+    }
+
+    async function ask(question) {
+      question = question.trim();
+      if (!question || state.busy || !state.chunks.length) return;
+      state.busy = true; toggleAsk(false);
+      $('log').querySelector('.empty')?.remove();
+      const q = document.createElement('div'); q.className = 'q'; q.textContent = question;
+      const a = document.createElement('div'); a.className = 'a'; a.innerHTML = '<div class="text dots">Searching the document</div>';
+      $('log').append(q, a); a.scrollIntoView({ behavior: 'smooth', block: 'end' });
+      try {
+        const { embeddings } = await api('/api/embed', { texts: [question], taskType: 'RETRIEVAL_QUERY' });
+        const sources = topK(embeddings[0], state.chunks, TOP_K);
+        a.querySelector('.text').textContent = 'Writing an answer';
+        const { answer } = await api('/api/chat', { question, sources: sources.map(({ text, page }) => ({ text, page })) });
+        a.querySelector('.text').classList.remove('dots');
+        renderAnswer(a, answer, sources);
+      } catch (e) {
+        a.classList.add('error');
+        a.querySelector('.text').classList.remove('dots');
+        a.querySelector('.text').textContent = e.message;
+      } finally {
+        state.busy = false; toggleAsk(true);
+        a.scrollIntoView({ behavior: 'smooth', block: 'end' });
+      }
+    }
+
+    // Wire up the UI
+    $('file').addEventListener('change', (e) => loadFile(e.target.files[0]));
+    $('drop').addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); $('file').click(); } });
+    for (const ev of ['dragenter', 'dragover']) $('drop').addEventListener(ev, (e) => { e.preventDefault(); $('drop').classList.add('over'); });
+    for (const ev of ['dragleave', 'drop']) $('drop').addEventListener(ev, (e) => { e.preventDefault(); $('drop').classList.remove('over'); });
+    $('drop').addEventListener('drop', (e) => loadFile(e.dataTransfer.files[0]));
+    $('index').addEventListener('click', () => {
+      const text = $('paste').value.trim();
+      if (!text) return setStatus('Choose a file or paste some text first.', true);
+      indexPages('Pasted text', [{ page: null, text }]);
+    });
+    $('sample').addEventListener('click', () => indexPages(SAMPLE.name, SAMPLE.pages));
+    $('ask').addEventListener('submit', (e) => { e.preventDefault(); const v = $('question').value; $('question').value = ''; ask(v); });
+  </script>
+</body>
+</html>
