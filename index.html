@@ -54,6 +54,12 @@
     .q { align-self: flex-end; background: var(--accent); color: var(--accent-ink); padding: 9px 13px; border-radius: 12px 12px 2px 12px; max-width: 80%; }
     .a { align-self: flex-start; max-width: 92%; }
     .a .text { white-space: pre-wrap; }
+    .a .text.md { white-space: normal; }
+    .a .text.md p { margin: 0 0 8px; }
+    .a .text.md h4 { margin: 12px 0 6px; font-size: 15px; }
+    .a .text.md ul, .a .text.md ol { margin: 4px 0 10px; padding-left: 22px; }
+    .a .text.md li { margin: 3px 0; }
+    .a .text.md li > ul, .a .text.md li > ol { margin: 4px 0; }
     .a .text sup { font-family: var(--mono); font-size: 11px; background: var(--accent-soft); color: var(--accent); padding: 0 4px; border-radius: 4px; cursor: pointer; }
     .a.error .text { color: var(--warn); background: var(--warn-soft); padding: 8px 12px; border-radius: 8px; }
     details { margin-top: 8px; font-size: 13px; }
@@ -131,12 +137,24 @@
     }
 
     async function api(path, body) {
-      const r = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      let r;
+      try {
+        r = await fetch(path, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+          signal: AbortSignal.timeout(70000), // never leave the UI spinning forever
+        });
+      } catch (e) {
+        throw new Error(e.name === 'TimeoutError' ? 'The request timed out. Please try again.' : 'Network error. Check your connection and try again.');
+      }
       const data = await r.json().catch(() => ({}));
       if (!r.ok) {
         const msg = r.status === 429
           ? 'Free-tier rate limit reached. Wait a minute and try again.'
-          : data.error || `Request failed (${r.status})`;
+          : r.status === 504 && !data.error
+            ? 'The AI took too long to answer. Please try again.'
+            : data.error || `Request failed (${r.status})`;
         throw new Error(msg);
       }
       return data;
@@ -227,14 +245,54 @@
     function renderAnswer(el, answer, sources) {
       const text = el.querySelector('.text');
       text.textContent = '';
-      // Turn [1], [2] markers into clickable superscripts that highlight the source.
-      for (const part of answer.split(/(\[\d+\])/g)) {
-        const m = part.match(/^\[(\d+)\]$/);
-        if (m && sources[+m[1] - 1]) {
-          const sup = document.createElement('sup'); sup.textContent = m[1];
-          sup.onclick = () => { const d = el.querySelector('details'); d.open = true; el.querySelectorAll('.src').forEach((s, i) => s.classList.toggle('hl', i === +m[1] - 1)); };
-          text.append(sup);
-        } else text.append(part);
+      text.classList.add('md');
+
+      // Inline formatting: **bold** and [1]-style citations (built with DOM nodes, never innerHTML).
+      const inline = (target, str) => {
+        for (const part of str.split(/(\*\*[^*]+\*\*|\[\d+(?:,\s*\d+)*\])/g)) {
+          if (!part) continue;
+          const bold = part.match(/^\*\*([^*]+)\*\*$/);
+          const cite = part.match(/^\[(\d+(?:,\s*\d+)*)\]$/);
+          if (bold) {
+            const b = document.createElement('strong'); inline(b, bold[1]); target.append(b);
+          } else if (cite) {
+            for (const n of cite[1].split(/,\s*/).map(Number)) {
+              if (!sources[n - 1]) continue;
+              const sup = document.createElement('sup'); sup.textContent = n;
+              sup.onclick = () => { el.querySelector('details').open = true; el.querySelectorAll('.src').forEach((s, i) => s.classList.toggle('hl', i === n - 1)); };
+              target.append(sup);
+            }
+          } else target.append(part);
+        }
+      };
+
+      // Block formatting: headings, nested bullet / numbered lists, paragraphs.
+      let stack = []; // [{ indent, list }]
+      const closeLists = () => { stack = []; };
+      for (const raw of answer.replace(/\r/g, '').split('\n')) {
+        const line = raw.replace(/\s+$/, '');
+        if (!line.trim()) { closeLists(); continue; }
+        const item = line.match(/^(\s*)(?:[*\-•]|\d+[.)])\s+(.*)$/);
+        const head = line.match(/^#{1,4}\s+(.*)$/);
+        if (item) {
+          const indent = item[1].length;
+          const ordered = /^\s*\d/.test(line);
+          while (stack.length && indent < stack[stack.length - 1].indent) stack.pop();
+          if (!stack.length || indent > stack[stack.length - 1].indent) {
+            const list = document.createElement(ordered ? 'ol' : 'ul');
+            const parentLi = stack.length ? stack[stack.length - 1].list.lastElementChild : null;
+            (parentLi || text).append(list);
+            stack.push({ indent, list });
+          }
+          const li = document.createElement('li'); inline(li, item[2]);
+          stack[stack.length - 1].list.append(li);
+        } else if (head) {
+          closeLists();
+          const h = document.createElement('h4'); inline(h, head[1]); text.append(h);
+        } else {
+          closeLists();
+          const p = document.createElement('p'); inline(p, line.trim()); text.append(p);
+        }
       }
       const det = document.createElement('details');
       det.innerHTML = `<summary>${sources.length} sources retrieved</summary>`;
