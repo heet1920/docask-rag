@@ -3,7 +3,12 @@
 
 import { buildPrompt } from '../lib.js';
 
-const MODEL = process.env.GEMINI_CHAT_MODEL || 'gemini-flash-latest';
+// Tried in order: if one model is overloaded, rate-limited or unavailable, fall back to the next.
+const MODELS = (process.env.GEMINI_CHAT_MODEL || 'gemini-flash-latest,gemini-flash-lite-latest,gemini-2.5-flash-lite')
+  .split(',')
+  .map((m) => m.trim())
+  .filter(Boolean);
+const RETRYABLE = new Set([404, 429, 500, 503]); // free-tier quotas are per model, so 429 can fall back too
 const MAX_QUESTION = 1000;
 const MAX_SOURCES = 6;
 const MAX_SOURCE_CHARS = 4000;
@@ -27,31 +32,35 @@ export default async function handler(req, res) {
   }));
   if (clean.some((s) => !s.text)) return res.status(400).json({ error: 'Every source needs text' });
 
-  try {
-    const r = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-goog-api-key': key },
-        body: JSON.stringify({
-          systemInstruction: {
-            parts: [{ text: 'You answer questions about a document using only the provided context. Be concise and cite sources like [1].' }],
-          },
-          contents: [{ role: 'user', parts: [{ text: buildPrompt(question.trim(), clean) }] }],
-          generationConfig: { temperature: 0.2, maxOutputTokens: 800 },
-        }),
+  const body = JSON.stringify({
+    systemInstruction: {
+      parts: [{ text: 'You answer questions about a document using only the provided context. Be concise and cite sources like [1].' }],
+    },
+    contents: [{ role: 'user', parts: [{ text: buildPrompt(question.trim(), clean) }] }],
+    generationConfig: { temperature: 0.2, maxOutputTokens: 800 },
+  });
+
+  let last = { status: 502, error: 'Could not reach the Gemini API' };
+  for (const model of MODELS) {
+    try {
+      const r = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
+        { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-goog-api-key': key }, body }
+      );
+      const data = await r.json();
+      if (r.ok) {
+        const answer = (data.candidates?.[0]?.content?.parts || [])
+          .map((p) => p.text || '')
+          .join('')
+          .trim();
+        return res.status(200).json({ answer: answer || "The model didn't return an answer. Try rephrasing.", model });
       }
-    );
-    const data = await r.json();
-    if (!r.ok) {
-      return res.status(r.status).json({ error: data?.error?.message || 'Generation request failed' });
+      last = { status: r.status, error: data?.error?.message || 'Generation request failed' };
+      if (!RETRYABLE.has(r.status)) break; // e.g. 400 bad request: another model will not help
+    } catch (err) {
+      last = { status: 502, error: 'Could not reach the Gemini API' };
     }
-    const answer = (data.candidates?.[0]?.content?.parts || [])
-      .map((p) => p.text || '')
-      .join('')
-      .trim();
-    return res.status(200).json({ answer: answer || "The model didn't return an answer. Try rephrasing." });
-  } catch (err) {
-    return res.status(502).json({ error: 'Could not reach the Gemini API' });
   }
+  const error = last.status === 503 ? 'All AI models are busy right now. Please try again in a minute.' : last.error;
+  return res.status(last.status).json({ error });
 }
