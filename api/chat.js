@@ -4,7 +4,7 @@
 import { buildPrompt } from '../lib.js';
 
 // Tried in order: if one model is overloaded, rate-limited or unavailable, fall back to the next.
-const MODELS = (process.env.GEMINI_CHAT_MODEL || 'gemini-flash-latest,gemini-flash-lite-latest,gemini-2.5-flash-lite')
+const MODELS = (process.env.GEMINI_CHAT_MODEL || 'gemini-flash-latest,gemini-3.5-flash-lite,gemini-flash-lite-latest')
   .split(',')
   .map((m) => m.trim())
   .filter(Boolean);
@@ -69,6 +69,7 @@ export default async function handler(req, res) {
         return res.status(200).json({ answer: answer || "The model didn't return an answer. Try rephrasing.", model });
       }
       last = { status: r.status, error: data?.error?.message || 'Generation request failed' };
+      console.warn(`[chat] ${model} failed (${r.status}): ${last.error}`);
       if (!RETRYABLE.has(r.status)) break; // e.g. 400 bad request: another model will not help
     } catch (err) {
       last = err?.name === 'TimeoutError'
